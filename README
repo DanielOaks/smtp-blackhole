@@ -1,3 +1,9 @@
 Build with:
-$ go build
 
+    go build smtp-blackhole.go
+    go build pop3-blackhole.go
+
+Use like:
+
+    ./smtp-blackhole -verbose -port 465 -cert fullchain.pem -key privkey.pem -tls
+    ./pop3-blackhole -verbose -port 995 -cert fullchain.pem -key privkey.pem -tls

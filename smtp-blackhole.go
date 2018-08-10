@@ -13,9 +13,10 @@ import (
 )
 
 type config struct {
-	latency time.Duration
-	verbose bool
-	tls     tls.Config
+	latency  time.Duration
+	verbose  bool
+	servetls bool
+	tls      tls.Config
 }
 
 type handler struct {
@@ -24,10 +25,11 @@ type handler struct {
 }
 
 var responses = map[string]handler{
-	"EHLO":           {"250-Pleased to meet you!\r\n250-PIPELINING\r\n250-CHUNKING\r\n250-STARTTLS\r\n250 OK\r\n", nil},
-	"LHLO":           {"250-Pleased to meet you!\r\n250-PIPELINING\r\n250-CHUNKING\r\n250-STARTTLS\r\n250 OK\r\n", nil},
+	"EHLO":           {"250-Pleased to meet you!\r\n250-PIPELINING\r\n250-CHUNKING\r\n250-STARTTLS\r\n250-AUTH PLAIN\r\n250 OK\r\n", nil},
+	"LHLO":           {"250-Pleased to meet you!\r\n250-PIPELINING\r\n250-CHUNKING\r\n250-STARTTLS\r\n250-AUTH PLAIN\r\n250 OK\r\n", nil},
 	"HELO":           {"250 Pleased to meet you!\r\n", nil},
 	"STAR" /*TTLS*/ : {"220 Ready to start TLS\r\n", handleStarttls},
+	"AUTH":           {"", handleAuth},
 	"MAIL":           {"250 OK\r\n", nil},
 	"RCPT":           {"250 OK\r\n", nil},
 	"DATA":           {"354 End data with <CR><LF>.<CR><LF>\r\n", handleData}, // Need to read data until \r\n.\r\n is received.
@@ -49,6 +51,8 @@ func sendResponse(c *net.Conn, s string, verbose bool) {
 }
 
 func handleConnection(c *net.Conn, conf *config) {
+	fmt.Println("\nNew connection from", (*c).RemoteAddr().String())
+
 	// Print banner
 	sendResponse(c, "220 Welcome to Blackhole SMTP!\r\n", conf.verbose)
 
@@ -113,6 +117,32 @@ func handleData(c *net.Conn, b []byte, conf *config) {
 	}
 }
 
+func handleAuth(c *net.Conn, b []byte, conf *config) {
+	authLine := strings.TrimSpace(strings.Trim(string(b), "\r\n \t\000"))
+
+	if authLine == "AUTH" {
+		sendResponse(c, "235 Authentication successful\r\n", conf.verbose)
+	} else if authLine == "AUTH PLAIN" {
+		sendResponse(c, "334\r\n", conf.verbose)
+
+		// Read data
+		l, e := (*c).Read(b)
+		if e != nil || l == 0 {
+			fmt.Println("Couldn't read additional info for AUTH PLAIN")
+			return
+		}
+
+		authLine = strings.TrimSpace(strings.Trim(string(b), "\r\n \t\000"))
+		if conf.verbose {
+			log.Printf("-> [%s]", authLine)
+		}
+
+		sendResponse(c, "235 Authentication successful\r\n", conf.verbose)
+	} else {
+		sendResponse(c, "235 Authentication successful\r\n", conf.verbose)
+	}
+}
+
 func handleBdat(c *net.Conn, b []byte, conf *config) {
 	// TODO Implement BDAT
 }
@@ -132,6 +162,7 @@ func main() {
 	flag.IntVar(&latency, "latency", 0, "Latency in milliseconds")
 	flag.IntVar(&port, "port", 25, "TCP port")
 	flag.BoolVar(&conf.verbose, "verbose", false, "Show the SMTP traffic")
+	flag.BoolVar(&conf.servetls, "tls", false, "Serve TLS on the selected port (e.g. 465)")
 
 	flag.Parse()
 
@@ -145,6 +176,7 @@ func main() {
 	conf.latency = time.Duration(latency) * time.Millisecond
 
 	if certFile != "" {
+		fmt.Println("Loading TLS certs")
 		// Load certificate
 		if keyFile == "" {
 			// Assume the private key is in the same file as the certificate
@@ -168,7 +200,13 @@ func main() {
 	}
 
 	// Start listening for incoming connections
-	l, e := net.ListenTCP("tcp", a)
+	var l net.Listener
+	if conf.servetls {
+		l, e = tls.Listen("tcp", fmt.Sprintf(":%d", port), &conf.tls)
+	} else {
+		l, e = net.ListenTCP("tcp", a)
+	}
+
 	if e != nil {
 		// Error!
 		log.Panic(e)
